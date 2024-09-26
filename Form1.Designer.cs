@@ -1,8 +1,10 @@
 ﻿using System.Drawing.Imaging;
 using SixLabors.ImageSharp.Formats.Jpeg;
-using SixLabors.ImageSharp.Processing; // 引入处理命名空间
+using SixLabors.ImageSharp.Processing;
 using SixLabors.ImageSharp.Formats.Bmp;
 using SixLabors.ImageSharp.Formats.Png;
+using System.Threading.Tasks;
+using System.Threading;
 
 namespace ImageCompress
 {
@@ -22,7 +24,6 @@ namespace ImageCompress
             {
                 components.Dispose();
             }
-
             base.Dispose(disposing);
         }
 
@@ -146,19 +147,18 @@ namespace ImageCompress
             fileNameLabel.AutoSize = true;
             fileNameLabel.Location = new Point(118, 325);
             fileNameLabel.Name = "fileNameLabel";
-            fileNameLabel.Size = new Size(0, 17);
+            fileNameLabel.Size = new Size(65, 17);
             fileNameLabel.TabIndex = 12;
             fileNameLabel.Text = "等待开始...";
             // 
             // progressInfoLabel
             // 
             progressInfoLabel.AutoSize = true;
-            progressInfoLabel.Location = new Point(450, 325);
+            progressInfoLabel.Location = new Point(371, 325);
             progressInfoLabel.Name = "progressInfoLabel";
-            progressInfoLabel.Size = new Size(0, 17);
+            progressInfoLabel.Size = new Size(56, 17);
             progressInfoLabel.TabIndex = 13;
             progressInfoLabel.Text = "进度信息";
-
             // 
             // Form1
             // 
@@ -183,8 +183,6 @@ namespace ImageCompress
             Load += Form1_Load;
             ResumeLayout(false);
             PerformLayout();
-            // 初始化按钮状态
-            UpdateButtonStates();
         }
 
         // 更新按钮的启用/禁用状态
@@ -207,8 +205,8 @@ namespace ImageCompress
         private ProgressBar progressBar;
         private Label fileNameLabel;
         private Label progressInfoLabel;
-        private TextBox sizeTextBox; // 目标大小文本框
-        private ComboBox scaleComboBox; // 缩放比例下拉框
+        private TextBox sizeTextBox;
+        private ComboBox scaleComboBox;
 
         private void SelectInputDirButton_Click(object sender, EventArgs e)
         {
@@ -246,12 +244,9 @@ namespace ImageCompress
             float targetSizeMB = 0;
             bool compressToSize = false;
 
-            if (!string.IsNullOrEmpty(sizeTextBox.Text))
+            if (!string.IsNullOrEmpty(sizeTextBox.Text) && float.TryParse(sizeTextBox.Text, out targetSizeMB))
             {
-                if (float.TryParse(sizeTextBox.Text, out targetSizeMB))
-                {
-                    compressToSize = true;
-                }
+                compressToSize = true;
             }
 
             if (string.IsNullOrEmpty(inputDir) || string.IsNullOrEmpty(outputDir))
@@ -265,10 +260,10 @@ namespace ImageCompress
                 Directory.CreateDirectory(outputDir);
             }
 
-            var files = Directory.GetFiles(inputDir, "*.*", SearchOption.AllDirectories)
-                                 .Where(file => file.EndsWith(".jpg", StringComparison.OrdinalIgnoreCase) ||
-                                                file.EndsWith(".png", StringComparison.OrdinalIgnoreCase) ||
-                                                file.EndsWith(".bmp", StringComparison.OrdinalIgnoreCase)).ToArray();
+            var files = Directory.EnumerateFiles(inputDir, "*.jpg", SearchOption.AllDirectories)
+                .Concat(Directory.EnumerateFiles(inputDir, "*.png", SearchOption.AllDirectories))
+                .Concat(Directory.EnumerateFiles(inputDir, "*.bmp", SearchOption.AllDirectories))
+                .ToArray();
 
             int totalFiles = files.Length;
             progressBar.Maximum = totalFiles;
@@ -277,155 +272,184 @@ namespace ImageCompress
             DateTime startTime = DateTime.Now;
             object lockObj = new object();
 
-            await Task.Run(() =>
+            var parallelOptions = new ParallelOptions
             {
-                Parallel.ForEach(files, new ParallelOptions { CancellationToken = cancellationTokenSource.Token }, file =>
+                CancellationToken = cancellationTokenSource.Token,
+                MaxDegreeOfParallelism = -1 // 不限制并发
+            };
+
+            try
+            {
+                await Task.Run(() =>
                 {
-                    try
+                    Parallel.ForEach(files, parallelOptions, file =>
                     {
-                        pauseEvent.Wait(); // 检查是否暂停
-
-                        using (var image = SixLabors.ImageSharp.Image.Load(file))
+                        try
                         {
-                            // 删除图片元数据
-                            image.Metadata.ExifProfile = null;
+                            // 检查是否被请求取消
+                            parallelOptions.CancellationToken.ThrowIfCancellationRequested();
 
-                            // 删除多余的通道，如Alpha通道
-                            if (image.PixelType.BitsPerPixel > 24) // 超过24位通常包含Alpha通道
+                            pauseEvent.Wait(parallelOptions.CancellationToken); // 支持暂停
+
+                            using (var image = SixLabors.ImageSharp.Image.Load(file))
                             {
-                                image.Mutate(x => x.BackgroundColor(SixLabors.ImageSharp.Color.White)); // 使用白色背景去除透明通道
-                            }
-
-                            // 获取用户选择的缩放比例
-                            string selectedScale = scaleComboBox.SelectedItem?.ToString() ?? "1"; // 如果没有选择项，则默认为"1"
-                            float scale = selectedScale switch
-                            {
-                                "1" => 1f,
-                                "1/2" => 0.5f,
-                                "1/4" => 0.25f,
-                                "1/8" => 0.125f,
-                                _ => 1f // 默认不缩放
-                            };
-
-                            if (scale < 1f)
-                            {
-                                // 按比例缩放
-                                image.Mutate(x => x.Resize((int)(image.Width * scale), (int)(image.Height * scale)));
-                            }
-
-                            var relativePath = Path.GetRelativePath(inputDir, file);
-                            var outputFilePath = Path.Combine(outputDir, relativePath);
-                            var outputDirectory = Path.GetDirectoryName(outputFilePath);
-
-                            if (!Directory.Exists(outputDirectory))
-                            {
-                                Directory.CreateDirectory(outputDirectory);
-                            }
-
-                            if (file.EndsWith(".jpg", StringComparison.OrdinalIgnoreCase))
-                            {
-                                if (compressToSize)
+                                // 删除元数据和多余通道
+                                image.Metadata.ExifProfile = null;
+                                if (image.PixelType.BitsPerPixel > 24)
                                 {
-                                    int quality = 90;
-                                    while (true)
-                                    {
-                                        using (var ms = new MemoryStream())
-                                        {
-                                            var encoder = new JpegEncoder { Quality = quality };
-                                            image.Save(ms, encoder);
-
-                                            if (ms.Length / 1024f / 1024f <= targetSizeMB || quality <= 10)
-                                            {
-                                                using (var outputStream = File.Create(outputFilePath))
-                                                {
-                                                    ms.Seek(0, SeekOrigin.Begin);
-                                                    ms.CopyTo(outputStream);
-                                                }
-                                                break;
-                                            }
-
-                                            quality -= 10;
-                                        }
-                                    }
+                                    image.Mutate(x => x.BackgroundColor(SixLabors.ImageSharp.Color.White));
                                 }
-                                else
+
+                                string selectedScale = scaleComboBox.SelectedItem?.ToString() ?? "1";
+                                float scale = selectedScale switch
                                 {
-                                    var encoder = new JpegEncoder { Quality = 90 };
-                                    using (var outputStream = File.Create(outputFilePath))
-                                    {
-                                        image.Save(outputStream, encoder);
-                                    }
-                                }
-                            }
-                            else if (file.EndsWith(".png", StringComparison.OrdinalIgnoreCase))
-                            {
-                                // 对于PNG，只支持缩放和删除元数据、Alpha通道
-                                var encoder = new PngEncoder
-                                {
-                                    CompressionLevel = PngCompressionLevel.BestCompression
+                                    "1" => 1f,
+                                    "1/2" => 0.5f,
+                                    "1/4" => 0.25f,
+                                    "1/8" => 0.125f,
+                                    _ => 1f
                                 };
-                                using (var outputStream = File.Create(outputFilePath))
+
+                                if (scale < 1f)
                                 {
-                                    image.Save(outputStream, encoder);
+                                    image.Mutate(x => x.Resize((int)(image.Width * scale), (int)(image.Height * scale)));
                                 }
-                            }
-                            else if (file.EndsWith(".bmp", StringComparison.OrdinalIgnoreCase))
-                            {
-                                // 对于BMP，只支持缩放和删除元数据、Alpha通道
-                                var encoder = new BmpEncoder();
-                                using (var outputStream = File.Create(outputFilePath))
+
+                                var relativePath = Path.GetRelativePath(inputDir, file);
+                                var outputFilePath = Path.Combine(outputDir, relativePath);
+                                var outputDirectory = Path.GetDirectoryName(outputFilePath);
+
+                                if (!Directory.Exists(outputDirectory))
                                 {
-                                    image.Save(outputStream, encoder);
+                                    Directory.CreateDirectory(outputDirectory);
+                                }
+
+                                // 保存文件
+                                if (file.EndsWith(".jpg", StringComparison.OrdinalIgnoreCase))
+                                {
+                                    SaveJpegWithSize(image, outputFilePath, targetSizeMB, compressToSize);
+                                }
+                                else if (file.EndsWith(".png", StringComparison.OrdinalIgnoreCase))
+                                {
+                                    SavePng(image, outputFilePath);
+                                }
+                                else if (file.EndsWith(".bmp", StringComparison.OrdinalIgnoreCase))
+                                {
+                                    SaveBmp(image, outputFilePath);
                                 }
                             }
                         }
-                    }
-                    catch (OperationCanceledException)
-                    {
-                        return; // 任务被取消时，退出循环
-                    }
-                    catch (Exception ex)
-                    {
-                        Invoke(new Action(() =>
+                        catch (OperationCanceledException)
                         {
-                            MessageBox.Show($"压缩文件 {file} 时出错: {ex.Message}\n{ex.StackTrace}");
-                            //触发暂停
-                            isPaused = true;
-                            pauseEvent.Reset(); // 设置暂停状态
-                            progressInfoLabel.Text = "出现错误，任务已暂停";
-                        }));
-                    }
-
-                    // 更新进度条和处理信息
-                    lock (lockObj)
-                    {
-                        progressBar.Invoke(new Action(() =>
+                            // 任务被取消，优雅退出
+                            return;
+                        }
+                        catch (Exception ex)
                         {
-                            progressBar.Value += 1;
+                            Invoke(new Action(() =>
+                            {
+                                MessageBox.Show($"压缩文件 {file} 时出错: {ex.Message}\n{ex.StackTrace}");
+                                isPaused = true;
+                                pauseEvent.Reset();
+                                progressInfoLabel.Text = "出现错误，任务已暂停";
+                            }));
+                        }
 
-                            double progressPercentage = (double)progressBar.Value / totalFiles * 100;
-                            TimeSpan elapsed = DateTime.Now - startTime;
-                            TimeSpan estimatedTotalTime = TimeSpan.FromTicks(elapsed.Ticks * totalFiles / progressBar.Value);
-                            TimeSpan remainingTime = estimatedTotalTime - elapsed;
+                        lock (lockObj)
+                        {
+                            progressBar.Invoke(new Action(() =>
+                            {
+                                progressBar.Value += 1;
 
-                            // 更新文件名到 fileNameLabel
-                            fileNameLabel.Text = $"正在压缩: {Path.GetFileName(file)}";
+                                if (progressBar.Value % 10 == 0) // 每处理10个文件更新一次UI
+                                {
+                                    double progressPercentage = (double)progressBar.Value / totalFiles * 100;
+                                    TimeSpan elapsed = DateTime.Now - startTime;
+                                    TimeSpan estimatedTotalTime = TimeSpan.FromTicks(elapsed.Ticks * totalFiles / progressBar.Value);
+                                    TimeSpan remainingTime = estimatedTotalTime - elapsed;
 
-                            // 更新进度信息到 progressInfoLabel
-                            progressInfoLabel.Text = $"{progressPercentage:F2}% 完成 - 预计剩余时间: {remainingTime:mm\\:ss}";
-                        }));
-                    }
+                                    fileNameLabel.Text = $"正在压缩: {Path.GetFileName(file)}";
+                                    progressInfoLabel.Text = $"{progressPercentage:F2}% 完成 - 预计剩余时间: {remainingTime:mm\\:ss}";
+                                }
+                            }));
+                        }
+                    });
                 });
-            });
+            }
+            catch (OperationCanceledException)
+            {
+                // 正常处理任务取消后的逻辑
+                MessageBox.Show("压缩任务已取消。");
+            }
 
             isCompressing = false;
             isPaused = false;
             UpdateButtonStates();
-            MessageBox.Show("压缩完成！");
             this.Invoke(new Action(() => progressInfoLabel.Text = "压缩完成！"));
         }
 
 
+        // 保存JPEG并尝试达到目标大小
+        private void SaveJpegWithSize(SixLabors.ImageSharp.Image image, string outputFilePath, float targetSizeMB, bool compressToSize)
+        {
+            if (compressToSize)
+            {
+                int low = 10, high = 90;
+                while (low <= high)
+                {
+                    int quality = (low + high) / 2;
+                    using (var ms = new MemoryStream())
+                    {
+                        var encoder = new JpegEncoder { Quality = quality };
+                        image.Save(ms, encoder);
+
+                        if (ms.Length / 1024f / 1024f <= targetSizeMB || quality <= 10)
+                        {
+                            File.WriteAllBytes(outputFilePath, ms.ToArray());
+                            break;
+                        }
+
+                        if (ms.Length / 1024f / 1024f > targetSizeMB)
+                        {
+                            high = quality - 1;
+                        }
+                        else
+                        {
+                            low = quality + 1;
+                        }
+                    }
+                }
+            }
+            else
+            {
+                var encoder = new JpegEncoder { Quality = 90 };
+                using (var outputStream = File.Create(outputFilePath))
+                {
+                    image.Save(outputStream, encoder);
+                }
+            }
+        }
+
+        private void SavePng(SixLabors.ImageSharp.Image image, string outputFilePath)
+        {
+            var encoder = new PngEncoder
+            {
+                CompressionLevel = PngCompressionLevel.BestCompression
+            };
+            using (var outputStream = File.Create(outputFilePath))
+            {
+                image.Save(outputStream, encoder);
+            }
+        }
+
+        private void SaveBmp(SixLabors.ImageSharp.Image image, string outputFilePath)
+        {
+            var encoder = new BmpEncoder();
+            using (var outputStream = File.Create(outputFilePath))
+            {
+                image.Save(outputStream, encoder);
+            }
+        }
 
         // 暂停任务
         private void PauseCompressionButton_Click(object sender, EventArgs e)
@@ -455,13 +479,8 @@ namespace ImageCompress
                 isPaused = false;
                 UpdateButtonStates();
                 progressInfoLabel.Text = "任务已取消";
+                fileNameLabel.Text = "等待开始...";
             }
-        }
-
-        private static ImageCodecInfo GetEncoder(ImageFormat format)
-        {
-            var codecs = ImageCodecInfo.GetImageDecoders();
-            return codecs.FirstOrDefault(c => c.FormatID == format.Guid);
         }
     }
 }
