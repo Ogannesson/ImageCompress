@@ -4,6 +4,8 @@ using SixLabors.ImageSharp; // 使用 SixLabors.ImageSharp 作为默认图像处
 using SixLabors.ImageSharp.Formats.Jpeg;
 using SixLabors.ImageSharp.Processing; // 引入处理命名空间
 using System.Threading;
+using SixLabors.ImageSharp.Formats.Bmp;
+using SixLabors.ImageSharp.Formats.Png;
 
 namespace ImageCompress
 {
@@ -141,10 +143,11 @@ namespace ImageCompress
             // scaleComboBox
             // 
             scaleComboBox.Items.AddRange(new object[] { "1", "1/2", "1/4", "1/8" });
-            scaleComboBox.Location = new SD.Point(414, 236);
+            scaleComboBox.Location = new SD.Point(371, 238);
             scaleComboBox.Name = "scaleComboBox";
-            scaleComboBox.Size = new SD.Size(150, 25);
+            scaleComboBox.Size = new SD.Size(76, 25);
             scaleComboBox.TabIndex = 11;
+            scaleComboBox.Text = "压缩倍率";
             // 
             // Form1
             // 
@@ -235,7 +238,11 @@ namespace ImageCompress
                 Directory.CreateDirectory(outputDir);
             }
 
-            var files = Directory.GetFiles(inputDir, "*.jpg", SearchOption.AllDirectories);
+            var files = Directory.GetFiles(inputDir, "*.*", SearchOption.AllDirectories)
+                                 .Where(file => file.EndsWith(".jpg", StringComparison.OrdinalIgnoreCase) ||
+                                                file.EndsWith(".png", StringComparison.OrdinalIgnoreCase) ||
+                                                file.EndsWith(".bmp", StringComparison.OrdinalIgnoreCase)).ToArray();
+
             int totalFiles = files.Length;
             progressBar.Maximum = totalFiles;
             progressBar.Value = 0;
@@ -279,60 +286,66 @@ namespace ImageCompress
                                 image.Mutate(x => x.Resize((int)(image.Width * scale), (int)(image.Height * scale)));
                             }
 
-                            if (compressToSize)
+                            var relativePath = Path.GetRelativePath(inputDir, file);
+                            var outputFilePath = Path.Combine(outputDir, relativePath);
+                            var outputDirectory = Path.GetDirectoryName(outputFilePath);
+
+                            if (!Directory.Exists(outputDirectory))
                             {
-                                int quality = 90;
-                                while (true)
+                                Directory.CreateDirectory(outputDirectory);
+                            }
+
+                            if (file.EndsWith(".jpg", StringComparison.OrdinalIgnoreCase))
+                            {
+                                if (compressToSize)
                                 {
-                                    using (var ms = new MemoryStream())
+                                    int quality = 90;
+                                    while (true)
                                     {
-                                        var encoder = new JpegEncoder { Quality = quality };
-                                        image.Save(ms, encoder);
-
-                                        // 判断当前图像大小是否小于目标大小，或者质量是否已经降低到最低
-                                        if (ms.Length / 1024f / 1024f <= targetSizeMB || quality <= 10)
+                                        using (var ms = new MemoryStream())
                                         {
-                                            var relativePath = Path.GetRelativePath(inputDir, file);
-                                            var outputFilePath = Path.Combine(outputDir, relativePath);
-                                            var outputDirectory = Path.GetDirectoryName(outputFilePath);
+                                            var encoder = new JpegEncoder { Quality = quality };
+                                            image.Save(ms, encoder);
 
-                                            if (!Directory.Exists(outputDirectory))
+                                            if (ms.Length / 1024f / 1024f <= targetSizeMB || quality <= 10)
                                             {
-                                                Directory.CreateDirectory(outputDirectory);
+                                                using (var outputStream = File.Create(outputFilePath))
+                                                {
+                                                    ms.Seek(0, SeekOrigin.Begin);
+                                                    ms.CopyTo(outputStream);
+                                                }
+                                                break;
                                             }
 
-                                            // 将最终压缩后的图像写入文件
-                                            using (var outputStream = File.Create(outputFilePath))
-                                            {
-                                                ms.Seek(0, SeekOrigin.Begin);
-                                                ms.CopyTo(outputStream);
-                                            }
-                                            break;
+                                            quality -= 10;
                                         }
-
-                                        // 如果未达到目标大小，继续降低质量进行压缩
-                                        quality -= 10;
+                                    }
+                                }
+                                else
+                                {
+                                    var encoder = new JpegEncoder { Quality = 90 };
+                                    using (var outputStream = File.Create(outputFilePath))
+                                    {
+                                        image.Save(outputStream, encoder);
                                     }
                                 }
                             }
-                            else
+                            else if (file.EndsWith(".png", StringComparison.OrdinalIgnoreCase))
                             {
-                                // 如果用户选择了按比例缩放，而不是按目标大小压缩
-                                var encoder = new JpegEncoder
+                                // 对于PNG，只支持缩放和删除元数据、Alpha通道
+                                var encoder = new PngEncoder
                                 {
-                                    Quality = 90 // 使用默认的 JPEG 压缩质量
+                                    CompressionLevel = PngCompressionLevel.BestCompression
                                 };
-
-                                var relativePath = Path.GetRelativePath(inputDir, file);
-                                var outputFilePath = Path.Combine(outputDir, relativePath);
-                                var outputDirectory = Path.GetDirectoryName(outputFilePath);
-
-                                if (!Directory.Exists(outputDirectory))
+                                using (var outputStream = File.Create(outputFilePath))
                                 {
-                                    Directory.CreateDirectory(outputDirectory);
+                                    image.Save(outputStream, encoder);
                                 }
-
-                                // 保存压缩后的图像
+                            }
+                            else if (file.EndsWith(".bmp", StringComparison.OrdinalIgnoreCase))
+                            {
+                                // 对于BMP，只支持缩放和删除元数据、Alpha通道
+                                var encoder = new BmpEncoder();
                                 using (var outputStream = File.Create(outputFilePath))
                                 {
                                     image.Save(outputStream, encoder);
@@ -342,12 +355,10 @@ namespace ImageCompress
                     }
                     catch (OperationCanceledException)
                     {
-                        // 任务被取消时，退出循环
-                        return;
+                        return; // 任务被取消时，退出循环
                     }
                     catch (Exception ex)
                     {
-                        // 在UI线程上显示错误信息
                         Invoke(new Action(() =>
                         {
                             MessageBox.Show($"压缩文件 {file} 时出错: {ex.Message}\n{ex.StackTrace}");
@@ -361,25 +372,21 @@ namespace ImageCompress
                         {
                             progressBar.Value += 1;
 
-                            // 计算压缩进度百分比
                             double progressPercentage = (double)progressBar.Value / totalFiles * 100;
-
-                            // 计算已处理时间和预计剩余时间
                             TimeSpan elapsed = DateTime.Now - startTime;
                             TimeSpan estimatedTotalTime = TimeSpan.FromTicks(elapsed.Ticks * totalFiles / progressBar.Value);
                             TimeSpan remainingTime = estimatedTotalTime - elapsed;
 
-                            // 更新进度信息显示
                             infoLabel.Text = $"正在压缩: {Path.GetFileName(file)} - {progressPercentage:F2}% 完成 - 预计剩余时间: {remainingTime:mm\\:ss}";
                         }));
                     }
                 });
             });
 
-            // 压缩完成后的提示信息
             MessageBox.Show("压缩完成！");
             this.Invoke(new Action(() => infoLabel.Text = "压缩完成！"));
         }
+
 
 
         // 暂停任务
