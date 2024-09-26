@@ -1,9 +1,6 @@
 ﻿using System.Drawing.Imaging;
-using SD = System.Drawing; // 为 System.Drawing 命名空间创建别名
-using SixLabors.ImageSharp; // 使用 SixLabors.ImageSharp 作为默认图像处理库
 using SixLabors.ImageSharp.Formats.Jpeg;
 using SixLabors.ImageSharp.Processing; // 引入处理命名空间
-using System.Threading;
 using SixLabors.ImageSharp.Formats.Bmp;
 using SixLabors.ImageSharp.Formats.Png;
 
@@ -16,6 +13,8 @@ namespace ImageCompress
         // 控制任务的相关变量
         private CancellationTokenSource cancellationTokenSource;
         private ManualResetEventSlim pauseEvent;
+        private bool isCompressing = false; // 标记当前是否正在压缩
+        private bool isPaused = false; // 标记当前是否处于暂停状态
 
         protected override void Dispose(bool disposing)
         {
@@ -38,30 +37,31 @@ namespace ImageCompress
             ResumeCompressionButton = new Button();
             StopCompressionButton = new Button();
             progressBar = new ProgressBar();
-            infoLabel = new Label();
             sizeTextBox = new TextBox();
             scaleComboBox = new ComboBox();
+            fileNameLabel = new Label();
+            progressInfoLabel = new Label();
             SuspendLayout();
             // 
             // inputDirTextBox
             // 
-            inputDirTextBox.Location = new SD.Point(118, 53);
+            inputDirTextBox.Location = new Point(118, 53);
             inputDirTextBox.Name = "inputDirTextBox";
-            inputDirTextBox.Size = new SD.Size(446, 23);
+            inputDirTextBox.Size = new Size(446, 23);
             inputDirTextBox.TabIndex = 0;
             // 
             // outputDirTextBox
             // 
-            outputDirTextBox.Location = new SD.Point(118, 152);
+            outputDirTextBox.Location = new Point(118, 152);
             outputDirTextBox.Name = "outputDirTextBox";
-            outputDirTextBox.Size = new SD.Size(446, 23);
+            outputDirTextBox.Size = new Size(446, 23);
             outputDirTextBox.TabIndex = 1;
             // 
             // SelectInputDirButton
             // 
-            SelectInputDirButton.Location = new SD.Point(604, 53);
+            SelectInputDirButton.Location = new Point(604, 53);
             SelectInputDirButton.Name = "SelectInputDirButton";
-            SelectInputDirButton.Size = new SD.Size(91, 23);
+            SelectInputDirButton.Size = new Size(91, 23);
             SelectInputDirButton.TabIndex = 2;
             SelectInputDirButton.Text = "选择输入目录";
             SelectInputDirButton.UseVisualStyleBackColor = true;
@@ -69,9 +69,9 @@ namespace ImageCompress
             // 
             // SelectOutputDirButton
             // 
-            SelectOutputDirButton.Location = new SD.Point(604, 152);
+            SelectOutputDirButton.Location = new Point(604, 152);
             SelectOutputDirButton.Name = "SelectOutputDirButton";
-            SelectOutputDirButton.Size = new SD.Size(91, 23);
+            SelectOutputDirButton.Size = new Size(91, 23);
             SelectOutputDirButton.TabIndex = 3;
             SelectOutputDirButton.Text = "选择输出目录";
             SelectOutputDirButton.UseVisualStyleBackColor = true;
@@ -79,9 +79,9 @@ namespace ImageCompress
             // 
             // StartCompressionButton
             // 
-            StartCompressionButton.Location = new SD.Point(118, 389);
+            StartCompressionButton.Location = new Point(118, 389);
             StartCompressionButton.Name = "StartCompressionButton";
-            StartCompressionButton.Size = new SD.Size(91, 23);
+            StartCompressionButton.Size = new Size(91, 23);
             StartCompressionButton.TabIndex = 4;
             StartCompressionButton.Text = "开始压缩";
             StartCompressionButton.UseVisualStyleBackColor = true;
@@ -89,9 +89,9 @@ namespace ImageCompress
             // 
             // PauseCompressionButton
             // 
-            PauseCompressionButton.Location = new SD.Point(241, 389);
+            PauseCompressionButton.Location = new Point(241, 389);
             PauseCompressionButton.Name = "PauseCompressionButton";
-            PauseCompressionButton.Size = new SD.Size(91, 23);
+            PauseCompressionButton.Size = new Size(91, 23);
             PauseCompressionButton.TabIndex = 5;
             PauseCompressionButton.Text = "暂停压缩";
             PauseCompressionButton.UseVisualStyleBackColor = true;
@@ -99,9 +99,9 @@ namespace ImageCompress
             // 
             // ResumeCompressionButton
             // 
-            ResumeCompressionButton.Location = new SD.Point(356, 389);
+            ResumeCompressionButton.Location = new Point(356, 389);
             ResumeCompressionButton.Name = "ResumeCompressionButton";
-            ResumeCompressionButton.Size = new SD.Size(91, 23);
+            ResumeCompressionButton.Size = new Size(91, 23);
             ResumeCompressionButton.TabIndex = 6;
             ResumeCompressionButton.Text = "继续压缩";
             ResumeCompressionButton.UseVisualStyleBackColor = true;
@@ -109,9 +109,9 @@ namespace ImageCompress
             // 
             // StopCompressionButton
             // 
-            StopCompressionButton.Location = new SD.Point(473, 389);
+            StopCompressionButton.Location = new Point(473, 389);
             StopCompressionButton.Name = "StopCompressionButton";
-            StopCompressionButton.Size = new SD.Size(91, 23);
+            StopCompressionButton.Size = new Size(91, 23);
             StopCompressionButton.TabIndex = 7;
             StopCompressionButton.Text = "结束压缩";
             StopCompressionButton.UseVisualStyleBackColor = true;
@@ -119,42 +119,54 @@ namespace ImageCompress
             // 
             // progressBar
             // 
-            progressBar.Location = new SD.Point(118, 293);
+            progressBar.Location = new Point(118, 293);
             progressBar.Name = "progressBar";
-            progressBar.Size = new SD.Size(446, 23);
+            progressBar.Size = new Size(446, 23);
             progressBar.TabIndex = 8;
-            // 
-            // infoLabel
-            // 
-            infoLabel.AutoSize = true;
-            infoLabel.Location = new SD.Point(118, 355);
-            infoLabel.Name = "infoLabel";
-            infoLabel.Size = new SD.Size(0, 17);
-            infoLabel.TabIndex = 9;
             // 
             // sizeTextBox
             // 
-            sizeTextBox.Location = new SD.Point(118, 238);
+            sizeTextBox.Location = new Point(118, 238);
             sizeTextBox.Name = "sizeTextBox";
             sizeTextBox.PlaceholderText = "目标大小 (MB)";
-            sizeTextBox.Size = new SD.Size(150, 23);
+            sizeTextBox.Size = new Size(150, 23);
             sizeTextBox.TabIndex = 10;
             // 
             // scaleComboBox
             // 
             scaleComboBox.Items.AddRange(new object[] { "1", "1/2", "1/4", "1/8" });
-            scaleComboBox.Location = new SD.Point(371, 238);
+            scaleComboBox.Location = new Point(371, 238);
             scaleComboBox.Name = "scaleComboBox";
-            scaleComboBox.Size = new SD.Size(76, 25);
+            scaleComboBox.Size = new Size(76, 25);
             scaleComboBox.TabIndex = 11;
             scaleComboBox.Text = "压缩倍率";
             // 
+            // fileNameLabel
+            // 
+            fileNameLabel.AutoSize = true;
+            fileNameLabel.Location = new Point(118, 325);
+            fileNameLabel.Name = "fileNameLabel";
+            fileNameLabel.Size = new Size(0, 17);
+            fileNameLabel.TabIndex = 12;
+            fileNameLabel.Text = "等待开始...";
+            // 
+            // progressInfoLabel
+            // 
+            progressInfoLabel.AutoSize = true;
+            progressInfoLabel.Location = new Point(450, 325);
+            progressInfoLabel.Name = "progressInfoLabel";
+            progressInfoLabel.Size = new Size(0, 17);
+            progressInfoLabel.TabIndex = 13;
+            progressInfoLabel.Text = "进度信息";
+
+            // 
             // Form1
             // 
-            AutoScaleDimensions = new SD.SizeF(7F, 17F);
+            AutoScaleDimensions = new SizeF(7F, 17F);
             AutoScaleMode = AutoScaleMode.Font;
-            ClientSize = new SD.Size(800, 500);
-            Controls.Add(infoLabel);
+            ClientSize = new Size(800, 500);
+            Controls.Add(fileNameLabel);
+            Controls.Add(progressInfoLabel);
             Controls.Add(progressBar);
             Controls.Add(StartCompressionButton);
             Controls.Add(PauseCompressionButton);
@@ -167,10 +179,21 @@ namespace ImageCompress
             Controls.Add(sizeTextBox);
             Controls.Add(scaleComboBox);
             Name = "Form1";
-            Text = "图像压缩工具";
+            Text = "图像压缩";
             Load += Form1_Load;
             ResumeLayout(false);
             PerformLayout();
+            // 初始化按钮状态
+            UpdateButtonStates();
+        }
+
+        // 更新按钮的启用/禁用状态
+        private void UpdateButtonStates()
+        {
+            StartCompressionButton.Enabled = !isCompressing;
+            PauseCompressionButton.Enabled = isCompressing && !isPaused;
+            ResumeCompressionButton.Enabled = isPaused;
+            StopCompressionButton.Enabled = isCompressing;
         }
 
         private TextBox inputDirTextBox;
@@ -182,7 +205,8 @@ namespace ImageCompress
         private Button ResumeCompressionButton;
         private Button StopCompressionButton;
         private ProgressBar progressBar;
-        private Label infoLabel;
+        private Label fileNameLabel;
+        private Label progressInfoLabel;
         private TextBox sizeTextBox; // 目标大小文本框
         private ComboBox scaleComboBox; // 缩放比例下拉框
 
@@ -211,6 +235,9 @@ namespace ImageCompress
         // 点击开始压缩按钮
         private async void StartCompressionButton_Click(object sender, EventArgs e)
         {
+            isCompressing = true;
+            isPaused = false;
+            UpdateButtonStates();
             cancellationTokenSource = new CancellationTokenSource();
             pauseEvent = new ManualResetEventSlim(true); // 初始状态不暂停
 
@@ -270,7 +297,7 @@ namespace ImageCompress
                             }
 
                             // 获取用户选择的缩放比例
-                            string selectedScale = scaleComboBox.SelectedItem.ToString();
+                            string selectedScale = scaleComboBox.SelectedItem?.ToString() ?? "1"; // 如果没有选择项，则默认为"1"
                             float scale = selectedScale switch
                             {
                                 "1" => 1f,
@@ -362,6 +389,10 @@ namespace ImageCompress
                         Invoke(new Action(() =>
                         {
                             MessageBox.Show($"压缩文件 {file} 时出错: {ex.Message}\n{ex.StackTrace}");
+                            //触发暂停
+                            isPaused = true;
+                            pauseEvent.Reset(); // 设置暂停状态
+                            progressInfoLabel.Text = "出现错误，任务已暂停";
                         }));
                     }
 
@@ -377,14 +408,21 @@ namespace ImageCompress
                             TimeSpan estimatedTotalTime = TimeSpan.FromTicks(elapsed.Ticks * totalFiles / progressBar.Value);
                             TimeSpan remainingTime = estimatedTotalTime - elapsed;
 
-                            infoLabel.Text = $"正在压缩: {Path.GetFileName(file)} - {progressPercentage:F2}% 完成 - 预计剩余时间: {remainingTime:mm\\:ss}";
+                            // 更新文件名到 fileNameLabel
+                            fileNameLabel.Text = $"正在压缩: {Path.GetFileName(file)}";
+
+                            // 更新进度信息到 progressInfoLabel
+                            progressInfoLabel.Text = $"{progressPercentage:F2}% 完成 - 预计剩余时间: {remainingTime:mm\\:ss}";
                         }));
                     }
                 });
             });
 
+            isCompressing = false;
+            isPaused = false;
+            UpdateButtonStates();
             MessageBox.Show("压缩完成！");
-            this.Invoke(new Action(() => infoLabel.Text = "压缩完成！"));
+            this.Invoke(new Action(() => progressInfoLabel.Text = "压缩完成！"));
         }
 
 
@@ -392,15 +430,19 @@ namespace ImageCompress
         // 暂停任务
         private void PauseCompressionButton_Click(object sender, EventArgs e)
         {
+            isPaused = true;
             pauseEvent.Reset(); // 设置暂停状态
-            infoLabel.Text = "任务已暂停";
+            progressInfoLabel.Text = "任务已暂停";
+            UpdateButtonStates();
         }
 
         // 继续任务
         private void ResumeCompressionButton_Click(object sender, EventArgs e)
         {
+            isPaused = false;
             pauseEvent.Set(); // 恢复任务
-            infoLabel.Text = "任务继续进行";
+            progressInfoLabel.Text = "任务继续进行";
+            UpdateButtonStates();
         }
 
         // 结束任务
@@ -409,7 +451,10 @@ namespace ImageCompress
             if (cancellationTokenSource != null)
             {
                 cancellationTokenSource.Cancel(); // 取消任务
-                infoLabel.Text = "任务已取消";
+                isCompressing = false;
+                isPaused = false;
+                UpdateButtonStates();
+                progressInfoLabel.Text = "任务已取消";
             }
         }
 
